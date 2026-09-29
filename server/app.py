@@ -22,30 +22,16 @@ llm_client = OllamaClient()
 dispatcher = CommandDispatcher(registry)
 tts = AudioFeedback()
 
-@app.route("/api/health", methods=["GET"])
-@require_internal_token
-def health_check():
-    # * Endpoint de comprobación de salud del orquestador
-    response = HealthResponse(device=DeviceType.MACOS, version="1.0.0")
-    return jsonify(response.model_dump()), 200
+def process_command_internal(text: str, source: str = "voice"):
+    # * Lógica centralizada para procesar cualquier comando (sea por HTTP, voz o CLI)
+    print(f"[*] Procesando comando ({source}): '{text}'")
 
-@app.route("/api/command", methods=["POST"])
-@require_internal_token
-def handle_command():
-    # * Recibe el texto de la orden y coordina el flujo completo
-    try:
-        req = CommandRequest(**request.get_json(force=True))
-    except ValidationError as e:
-        return jsonify({"error": "Payload inválido", "details": e.errors()}), 400
-
-    print(f"[*] Comando recibido ({req.source}): '{req.text}'")
-
-    # * 1. Consultar a Ollama en CachyOS para interpretar intención
-    intent = llm_client.infer_intent(req.text)
+    # * 1. Consultar a Ollama en CachyOS para clasificar intención
+    intent = llm_client.infer_intent(text)
     if not intent:
         error_msg = "No logré entender la instrucción o el servidor de lenguaje no respondió."
         tts.speak(error_msg)
-        return jsonify({"success": False, "message": error_msg}), 502
+        return False, {"success": False, "message": error_msg}, 502
 
     # * 2. Despachar acción al nodo correspondiente
     result = dispatcher.dispatch(intent)
@@ -56,11 +42,30 @@ def handle_command():
     else:
         tts.speak(f"Hubo un problema: {result.message}")
 
-    return jsonify({
+    return result.success, {
         "success": result.success,
         "intent": intent.model_dump(),
         "execution_result": result.model_dump()
-    }), 200
+    }, 200
+
+@app.route("/api/health", methods=["GET"])
+@require_internal_token
+def health_check():
+    # * Endpoint de comprobación de salud del orquestador
+    response = HealthResponse(device=DeviceType.MACOS, version="1.0.0")
+    return jsonify(response.model_dump()), 200
+
+@app.route("/api/command", methods=["POST"])
+@require_internal_token
+def handle_command():
+    # * Recibe el texto de la orden por HTTP
+    try:
+        req = CommandRequest(**request.get_json(force=True))
+    except ValidationError as e:
+        return jsonify({"error": "Payload inválido", "details": e.errors()}), 400
+
+    _, result_data, status_code = process_command_internal(req.text, source=req.source)
+    return jsonify(result_data), status_code
 
 @app.route("/api/nodes/register", methods=["POST"])
 @require_internal_token
@@ -79,7 +84,6 @@ def register_node():
 def nodes_status():
     # * Retorna el estado en tiempo real de todos los nodos en la LAN
     nodes = registry.list_nodes()
-    # * Validar salud en vivo
     status_list = []
     for node in nodes:
         live_status = registry.check_node_health(node.device)
@@ -95,8 +99,30 @@ def nodes_status():
         "nodes": status_list
     }), 200
 
+def start_voice_listener():
+    # * Arranca el listener de micrófono si está habilitado
+    if os.getenv("ENABLE_VOICE_LISTENER", "true").lower() in ("true", "1", "yes"):
+        try:
+            from server.audio.wake_word import WakeWordListener
+            listener = WakeWordListener(
+                on_command_detected=lambda cmd: process_command_internal(cmd, source="microphone")
+            )
+            listener.start()
+            return listener
+        except Exception as e:
+            print(f"[!] No se pudo iniciar el listener de micrófono: {e}")
+    return None
+
 if __name__ == "__main__":
     host = os.getenv("SERVER_HOST", "0.0.0.0")
     port = int(os.getenv("SERVER_PORT", 5000))
     print(f"[*] Iniciando Servidor Orquestador Lili en http://{host}:{port}")
-    app.run(host=host, port=port, debug=False)
+    
+    # Iniciar escucha de micrófono en segundo plano
+    listener = start_voice_listener()
+    
+    try:
+        app.run(host=host, port=port, debug=False)
+    finally:
+        if listener:
+            listener.stop()
