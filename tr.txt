@@ -1,0 +1,5 @@
+
+curl -X POST http://localhost:5000/api/command \
+  -H "X-Internal-Token: tu_token_secreto" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "sube el volumen al 70 por ciento", "source": "terminal"}'
