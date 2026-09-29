@@ -15,22 +15,58 @@ echo "  🌸 Instalador Automático de Lili para macOS"
 echo "  Directorio de trabajo: $DIR"
 echo "======================================================="
 
-# * 1. Verificar dependencias nativas del sistema con Homebrew
+# * 1. Verificar e instalar Homebrew si no está presente
 echo ""
 echo "[*] Paso 1: Verificando herramientas de sistema..."
+
+# Si no está en el PATH pero existe en el disco, cargarlo
+if [ -f "/opt/homebrew/bin/brew" ]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+elif [ -f "/usr/local/bin/brew" ]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+fi
+
+if ! command -v brew >/dev/null 2>&1; then
+    echo "[!] Homebrew no está instalado en tu Mac."
+    echo "[!] Homebrew es esencial para instalar ffmpeg, portaudio y pkg-config"
+    echo "    (necesarios para la captura de micrófono y el modelo Whisper)."
+    echo ""
+    read -p "¿Deseas instalar Homebrew automáticamente ahora? (S/n): " INSTALL_BREW
+    INSTALL_BREW=${INSTALL_BREW:-s}
+    if [[ "$INSTALL_BREW" =~ ^[sS]$ ]]; then
+        echo "[*] Descargando e instalando Homebrew oficial de macOS..."
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+        
+        # Cargar brew recién instalado
+        if [ -f "/opt/homebrew/bin/brew" ]; then
+            eval "$(/opt/homebrew/bin/brew shellenv)"
+        elif [ -f "/usr/local/bin/brew" ]; then
+            eval "$(/usr/local/bin/brew shellenv)"
+        fi
+        echo "[+] Homebrew instalado con éxito."
+    else
+        echo "[!] Continuando sin Homebrew (podrían fallar módulos nativos de audio)..."
+    fi
+fi
+
+# Instalar paquetes requeridos de Homebrew si está disponible
 if command -v brew >/dev/null 2>&1; then
-    echo "[+] Homebrew detectado."
-    if ! brew list ffmpeg >/dev/null 2>&1; then
-        echo "[*] Instalando ffmpeg vía Homebrew..."
-        brew install ffmpeg
-    fi
-    if ! brew list portaudio >/dev/null 2>&1; then
-        echo "[*] Instalando portaudio vía Homebrew..."
-        brew install portaudio
-    fi
-else
-    echo "[!] Advertencia: Homebrew no está instalado."
-    echo "[!] Para óptimo rendimiento de audio, se recomienda instalar 'portaudio' y 'ffmpeg'."
+    echo "[+] Verificando paquetes del sistema en Homebrew..."
+    for pkg in ffmpeg portaudio pkg-config; do
+        if ! brew list "$pkg" >/dev/null 2>&1; then
+            echo "[*] Instalando $pkg vía Homebrew..."
+            brew install "$pkg"
+        else
+            echo "[+] $pkg ya está instalado."
+        fi
+    done
+fi
+
+# * Configurar variables de compilación para bibliotecas C (PyAV / ffmpeg)
+if [ -d "/opt/homebrew/lib/pkgconfig" ]; then
+    export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:${PKG_CONFIG_PATH}"
+elif [ -d "/usr/local/lib/pkgconfig" ]; then
+    export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH}"
 fi
 
 # * 2. Comprobar Python 3
@@ -57,8 +93,16 @@ fi
 echo ""
 echo "[*] Paso 4: Instalando dependencias Python..."
 source venv/bin/activate
-pip install --upgrade pip
-pip install -r server/requirements.txt
+
+echo "[*] Actualizando herramientas de empaquetado (pip, setuptools, wheel)..."
+pip install --upgrade pip setuptools wheel
+
+echo "[*] Instalando paquete PyAV binario precompilado..."
+# ! Forzar descarga de rueda binaria precompilada de 'av' para evitar errores de compilación
+pip install --prefer-binary "av>=11.0.0" || pip install "av>=11.0.0"
+
+echo "[*] Instalando resto de requerimientos..."
+pip install --prefer-binary -r server/requirements.txt
 
 # * 5. Configurar archivo de variables de entorno (.env)
 echo ""
@@ -102,3 +146,4 @@ echo "  ./scripts/mac/run_mac.command"
 echo "======================================================="
 echo ""
 read -p "Presiona Enter para cerrar esta ventana..."
+
