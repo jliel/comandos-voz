@@ -67,7 +67,7 @@ class OllamaClient:
                 json=payload, 
                 timeout=LLM_HTTP_TIMEOUT
             )
-            response.raise_for_status()
+            response.raise_for_error()
             data = response.json()
             raw_response = data.get("response", "").strip()
 
