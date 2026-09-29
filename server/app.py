@@ -51,9 +51,9 @@ def handle_command():
     result = dispatcher.dispatch(intent)
 
     # * 3. Retroalimentación auditiva final
-    if intent.speech_response and result.success:
-        tts.speak(intent.speech_response)
-    elif not result.success:
+    if result.success:
+        tts.speak(intent.speech_response or result.message or "Acción realizada con éxito.")
+    else:
         tts.speak(f"Hubo un problema: {result.message}")
 
     return jsonify({

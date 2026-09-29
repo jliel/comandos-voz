@@ -32,6 +32,16 @@ Catálogo de dispositivos y acciones:
   - action: "spotify_play" (params: {"query": "canción o artista"})
   - action: "youtube_play" (params: {"query": "video"})
   - action: "system_key" (params: {"key": "nombre_tecla"})
+
+Ejemplos obligatorios:
+Usuario: "sube el volumen al 70 por ciento"
+{"intent": "volume", "target_device": "macos", "action": "volume", "parameters": {"level": 70}, "speech_response": "Volumen ajustado al 70 por ciento."}
+
+Usuario: "pon música en spotify"
+{"intent": "play_music", "target_device": "windows", "action": "spotify_play", "parameters": {"query": ""}, "speech_response": "Reproduciendo música en Windows."}
+
+Usuario: "pausa la música en linux"
+{"intent": "media", "target_device": "cachyos", "action": "media_toggle", "parameters": {}, "speech_response": "Música pausada en CachyOS."}
 """
 
 class OllamaClient:

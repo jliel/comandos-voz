@@ -30,12 +30,24 @@ class CommandDispatcher:
     def _execute_macos_local(self, action: str, params: Dict[str, Any]) -> ExecuteResponse:
         # * Ejecuta habilidades nativas locales en macOS
         try:
-            if action == "volume":
-                level = int(params.get("level", 50))
-                # * Ajusta el volumen del sistema mediante AppleScript
-                apple_script = f"set volume output volume {level}"
+            # * Manejo flexible de volumen
+            if action in ("volume", "set_volume", "up", "down", "volume_up", "volume_down") or "volum" in action.lower():
+                level = params.get("level")
+                if level is not None:
+                    level_int = max(0, min(100, int(level)))
+                    apple_script = f"set volume output volume {level_int}"
+                elif action in ("up", "volume_up"):
+                    apple_script = "set volume output volume ((output volume of (get volume settings)) + 10)"
+                    level_int = "aumentado"
+                elif action in ("down", "volume_down"):
+                    apple_script = "set volume output volume ((output volume of (get volume settings)) - 10)"
+                    level_int = "reducido"
+                else:
+                    apple_script = "set volume output volume 50"
+                    level_int = 50
+
                 subprocess.run(["osascript", "-e", apple_script], check=True)
-                return ExecuteResponse(success=True, message=f"Volumen ajustado al {level}%")
+                return ExecuteResponse(success=True, message=f"Volumen ajustado ({level_int}).")
 
             elif action == "reminder":
                 title = params.get("title", "Recordatorio de Lili")
