@@ -1,7 +1,7 @@
 import threading
 import time
 import re
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 import numpy as np
 
 from server.audio.vad import VoiceActivityDetector
@@ -45,7 +45,7 @@ class WakeWordListener:
             self._thread.join(timeout=2.0)
             print("[*] Listener de micrófono detenido.")
 
-    def _clean_wake_word(self, text: str) -> Tuple_Extract:
+    def _clean_wake_word(self, text: str) -> Tuple[bool, str]:
         # * Verifica si el texto contiene la palabra clave y extrae el comando remanente
         text_lower = text.lower().strip()
         # Eliminar signos de puntuación iniciales
@@ -127,5 +127,3 @@ class WakeWordListener:
             # ! Error accediendo al hardware de audio (ej. permisos de micrófono en macOS)
             print(f"[!] Error en el flujo de captura de audio: {e}")
             print("[!] En macOS, asegúrate de haber otorgado permisos de micrófono a Terminal / Python.")
-
-Tuple_Extract = tuple[bool, str]
