@@ -20,3 +20,4 @@ class NodeStatus(str, Enum):
     ONLINE = "online"
     OFFLINE = "offline"
     DEGRADED = "degraded"
+    UNKNOWN = "unknown"
