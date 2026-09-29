@@ -2,6 +2,7 @@ import threading
 import time
 import re
 from typing import Callable, List, Optional, Tuple
+from collections import deque
 import numpy as np
 
 from server.audio.vad import VoiceActivityDetector
@@ -10,17 +11,19 @@ from server.audio.tts import AudioFeedback
 
 # * Listener continuo en segundo plano para detección de "Hey Lili" y captura de comandos
 
-DEFAULT_TRIGGER_WORDS = ["hey lili", "oye lili", "hola lili", "lili"]
+# * Variaciones fonéticas comunes de cómo Whisper transcribe "Hey Lili" en español e inglés
+WAKE_WORD_PATTERN = re.compile(
+    r"\b(hey|oye|hola|ey|ay|ok)?\s*(lili|lily|lilly|leli|li li)\b", 
+    re.IGNORECASE
+)
 
 class WakeWordListener:
     def __init__(
         self, 
         on_command_detected: Callable[[str], None],
-        trigger_words: Optional[List[str]] = None,
         sample_rate: int = 16000
     ) -> None:
         self.on_command = on_command_detected
-        self.trigger_words = [w.lower() for w in (trigger_words or DEFAULT_TRIGGER_WORDS)]
         self.sample_rate = sample_rate
         self.vad = VoiceActivityDetector(sample_rate=sample_rate)
         self.stt = SpeechToText(model_size="base")
@@ -36,7 +39,6 @@ class WakeWordListener:
         self._running = True
         self._thread = threading.Thread(target=self._listen_loop, daemon=True, name="WakeWordListener")
         self._thread.start()
-        print(f"[*] Escucha continua activa en el micrófono (Palabras clave: {', '.join(self.trigger_words)})")
 
     def stop(self) -> None:
         # * Detiene el listener
@@ -45,22 +47,16 @@ class WakeWordListener:
             self._thread.join(timeout=2.0)
             print("[*] Listener de micrófono detenido.")
 
-    def _clean_wake_word(self, text: str) -> Tuple[bool, str]:
+    def _extract_wake_word(self, text: str) -> Tuple[bool, str]:
         # * Verifica si el texto contiene la palabra clave y extrae el comando remanente
-        text_lower = text.lower().strip()
-        # Eliminar signos de puntuación iniciales
-        text_clean = re.sub(r"^[¡!¿?,.\s]+", "", text_lower)
-
-        for trigger in self.trigger_words:
-            # Buscar el trigger al inicio o dentro de la frase
-            pattern = rf"\b{re.escape(trigger)}\b"
-            match = re.search(pattern, text_clean)
-            if match:
-                # Extraer lo que viene después del trigger
-                remainder = text_clean[match.end():].strip()
-                remainder = re.sub(r"^[¡!¿?,.\s]+", "", remainder)
-                return True, remainder
-
+        text_clean = text.strip()
+        match = WAKE_WORD_PATTERN.search(text_clean)
+        if match:
+            # Extraer lo que viene después del trigger
+            remainder = text_clean[match.end():].strip()
+            # Quitar signos de puntuación iniciales (ej. comas, puntos)
+            remainder = re.sub(r"^[¡!¿?,.\s]+", "", remainder).strip()
+            return True, remainder
         return False, ""
 
     def _listen_loop(self) -> None:
@@ -68,12 +64,14 @@ class WakeWordListener:
         try:
             import sounddevice as sd
         except ImportError:
-            print("[!] sounddevice no está disponible. No se puede iniciar la captura de micrófono.")
+            print("[!] sounddevice no está instalado en este entorno.")
             return
 
-        chunk_size = 1024
+        chunk_size = 1024  # ~64ms por fragmento a 16kHz
+        # Buffer circular de los últimos 4 fragmentos (~250ms) para no perder el inicio del habla
+        pre_buffer = deque(maxlen=4)
 
-        print("[+] Abriendo stream de micrófono...")
+        print("[*] Abriendo stream de micrófono...")
         try:
             with sd.InputStream(
                 samplerate=self.sample_rate, 
@@ -81,49 +79,73 @@ class WakeWordListener:
                 dtype="int16", 
                 blocksize=chunk_size
             ) as stream:
+                
+                print("[*] Calibrando nivel de ruido ambiental del micrófono (mantén silencio 1 segundo)...")
+                self.vad.calibrate(stream, num_chunks=15, chunk_size=chunk_size)
+                print("[+] ✅ Micrófono listo. Di 'Hey Lili' seguido de tu orden...")
+
                 while self._running:
-                    # * 1. Detectar si el usuario comienza a hablar (VAD)
                     data, _ = stream.read(chunk_size)
+                    pre_buffer.append(data.copy())
+
+                    # * 1. Comprobar si hay actividad de voz
                     if not self.vad.is_speech(data):
-                        time.sleep(0.01)
                         continue
 
-                    # * 2. Se detectó voz: grabar la frase completa hasta el silencio final
-                    recorded_audio = self.vad.record_until_silence(stream, chunk_size=chunk_size)
-                    if recorded_audio is None or len(recorded_audio) < self.sample_rate * 0.5:
-                        # Audio demasiado corto (< 0.5 segundos), ruido incidental
+                    # * 2. Voz detectada: iniciar grabación completa
+                    print("\n[🎙️ Escuchando...]")
+                    initial_frames = list(pre_buffer)
+                    recorded_audio = self.vad.record_until_silence(
+                        stream, 
+                        initial_frames=initial_frames, 
+                        chunk_size=chunk_size
+                    )
+
+                    if recorded_audio is None or len(recorded_audio) < self.sample_rate * 0.4:
+                        # Fragmento demasiado corto (< 0.4s), fue un chasquido o ruido breve
                         continue
 
-                    # * 3. Transcribir la frase con faster-whisper
-                    transcription = self.stt.transcribe_audio_data(recorded_audio, sample_rate=self.sample_rate)
+                    # * 3. Transcribir con faster-whisper
+                    print("[⏳ Transcribiendo voz con Whisper...]")
+                    transcription = self.stt.transcribe_audio_data(
+                        recorded_audio, 
+                        sample_rate=self.sample_rate
+                    )
+
                     if not transcription:
+                        print("[?] No se detectó texto claro en la grabación.")
                         continue
 
-                    print(f"[🎤 Transcripción micrófono]: \"{transcription}\"")
+                    print(f"[🗣️ Whisper escuchó]: \"{transcription}\"")
 
-                    # * 4. Analizar si contiene la palabra clave
-                    is_wake, remainder = self._clean_wake_word(transcription)
+                    # * 4. Analizar si la frase contiene 'Hey Lili' o variantes
+                    is_wake, remainder = self._extract_wake_word(transcription)
 
                     if is_wake:
-                        # * Emitir chime de confirmación sonora
+                        print("[🔔 ¡Palabra clave 'Lili' detectada!]")
                         self.feedback.play_activation_chime()
 
                         if len(remainder) >= 3:
-                            # * Modo 'One-shot': El usuario dijo "Hey Lili, sube el volumen"
-                            print(f"[⚡ Comando directo detectado]: \"{remainder}\"")
+                            # * Modo 'One-shot': "Hey Lili, sube el volumen"
+                            print(f"[⚡ Ejecutando comando directo]: \"{remainder}\"")
                             self.on_command(remainder)
                         else:
-                            # * Modo 'Conversacional': El usuario solo dijo "Hey Lili"
-                            print("[?] Esperando instrucción subsecuente tras 'Hey Lili'...")
-                            # Grabar el siguiente comando
+                            # * Modo 'Conversacional': Solo dijo "Hey Lili"
+                            print("[?] Esperando tu orden tras 'Hey Lili' (habla ahora)...")
                             followup_audio = self.vad.record_until_silence(stream, chunk_size=chunk_size)
                             if followup_audio is not None:
-                                followup_text = self.stt.transcribe_audio_data(followup_audio, sample_rate=self.sample_rate)
+                                followup_text = self.stt.transcribe_audio_data(
+                                    followup_audio, 
+                                    sample_rate=self.sample_rate
+                                )
                                 if followup_text:
-                                    print(f"[⚡ Comando subsecuente detectado]: \"{followup_text}\"")
+                                    print(f"[⚡ Ejecutando comando subsecuente]: \"{followup_text}\"")
                                     self.on_command(followup_text)
+                    else:
+                        print("[ℹ️ Frase no dirigida a Lili (no se detectó 'Hey Lili')]\n")
 
         except Exception as e:
             # ! Error accediendo al hardware de audio (ej. permisos de micrófono en macOS)
             print(f"[!] Error en el flujo de captura de audio: {e}")
-            print("[!] En macOS, asegúrate de haber otorgado permisos de micrófono a Terminal / Python.")
+            print("[!] En macOS, verifica en: Preferencias del Sistema -> Seguridad y Privacidad -> Micrófono.")
+
